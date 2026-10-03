@@ -11,7 +11,7 @@ import NotificationItem from "../notifications/shared/NotificationItem";
 
 import {
   getNotificationPath
-} from "../notifications/shared/notificationHelpers";
+} from "../notifications/shared/NotificationHelpers.js";
 
 import {
   useNotifications
