@@ -17,7 +17,7 @@ import {
   getNotificationPath,
   notificationClasses,
   notificationIcon
-} from "./notificationHelpers.js";
+} from "./NotificationHelpers.js";
 
 export default function NotificationBell() {
   const navigate =
