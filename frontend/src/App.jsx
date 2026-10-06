@@ -606,11 +606,11 @@ function Navbar() {
             <div className="hidden sm:block">
 
               <div className="text-sm font-black tracking-tight text-slate-950">
-                RuralFresh
+                Alambagirir Fresh
               </div>
 
               <div className="text-[9px] font-bold uppercase tracking-[0.18em] text-slate-400">
-                Rural commerce network
+                Vegetables • Food • Readymade
               </div>
 
             </div>
