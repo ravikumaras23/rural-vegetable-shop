@@ -9,7 +9,9 @@ const {
   getProductsForModeration,
   approveProduct,
   rejectProduct,
-  updateProductModerationStatus
+  updateProductModerationStatus,
+  getCustomersByVillage,
+  getVillageOverview
 } = require("../controllers/adminController");
 
 const {
@@ -28,38 +30,62 @@ const {
 
 const router = express.Router();
 
-
-const {
-  getCustomersByVillage,
-  getVillageOverview
-} = require("../controllers/adminController");
-
-
-
-router.get(
-  "/customers",
-  protect,
-  authorizeRoles("admin"),
-  getCustomersByVillage
-);
-
-router.get(
-  "/villages",
-  protect,
-  authorizeRoles("admin"),
-  getVillageOverview
-);
 /*
 |--------------------------------------------------------------------------
 | ADMIN DASHBOARD
 |--------------------------------------------------------------------------
 */
 
+/*
+ * Get admin dashboard statistics
+ * GET /api/admin/dashboard
+ */
 router.get(
   "/dashboard",
   protect,
   authorize("admin"),
   getDashboardStats
+);
+
+/*
+|--------------------------------------------------------------------------
+| ADMIN VILLAGE / CUSTOMER MANAGEMENT
+|--------------------------------------------------------------------------
+*/
+
+/*
+ * Get customers by village
+ *
+ * GET /api/admin/customers
+ *
+ * Optional query parameters:
+ * ?village=Chintamani
+ * ?district=Chikkaballapur
+ * ?search=Ravi
+ * ?page=1
+ * ?limit=20
+ */
+router.get(
+  "/customers",
+  protect,
+  authorize("admin"),
+  getCustomersByVillage
+);
+
+/*
+ * Get village overview
+ *
+ * GET /api/admin/villages
+ *
+ * Optional query parameters:
+ * ?village=Chintamani
+ * ?district=Chikkaballapur
+ */
+router.get(
+  "/villages",
+  protect,
+  authorize("admin"),
+  getVillageOverview
 );
 
 /*
@@ -70,6 +96,7 @@ router.get(
 
 /*
  * Get all orders
+ *
  * GET /api/admin/orders
  */
 router.get(
@@ -81,6 +108,7 @@ router.get(
 
 /*
  * Get single order
+ *
  * GET /api/admin/orders/:id
  */
 router.get(
@@ -92,6 +120,7 @@ router.get(
 
 /*
  * Update order status
+ *
  * PATCH /api/admin/orders/:id/status
  */
 router.patch(
@@ -109,7 +138,12 @@ router.patch(
 
 /*
  * Get all sellers
+ *
  * GET /api/admin/sellers
+ *
+ * Optional:
+ * ?village=Chintamani
+ * ?district=Chikkaballapur
  */
 router.get(
   "/sellers",
@@ -120,6 +154,7 @@ router.get(
 
 /*
  * Approve seller
+ *
  * PATCH /api/admin/sellers/:id/approve
  */
 router.patch(
@@ -131,6 +166,7 @@ router.patch(
 
 /*
  * Reject seller
+ *
  * PATCH /api/admin/sellers/:id/reject
  */
 router.patch(
@@ -142,6 +178,7 @@ router.patch(
 
 /*
  * Activate / deactivate seller
+ *
  * PATCH /api/admin/sellers/:id/status
  *
  * Body:
@@ -170,7 +207,12 @@ router.patch(
 
 /*
  * Get products for moderation
+ *
  * GET /api/admin/products
+ *
+ * Optional:
+ * ?village=Chintamani
+ * ?district=Chikkaballapur
  */
 router.get(
   "/products",
@@ -181,6 +223,7 @@ router.get(
 
 /*
  * Approve product
+ *
  * PATCH /api/admin/products/:id/approve
  */
 router.patch(
@@ -192,6 +235,7 @@ router.patch(
 
 /*
  * Reject product
+ *
  * PATCH /api/admin/products/:id/reject
  */
 router.patch(
@@ -203,6 +247,7 @@ router.patch(
 
 /*
  * Activate / deactivate product
+ *
  * PATCH /api/admin/products/:id/status
  */
 router.patch(
