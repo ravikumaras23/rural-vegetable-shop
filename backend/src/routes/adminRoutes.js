@@ -28,6 +28,27 @@ const {
 
 const router = express.Router();
 
+
+const {
+  getCustomersByVillage,
+  getVillageOverview
+} = require("../controllers/adminController");
+
+
+
+router.get(
+  "/customers",
+  protect,
+  authorizeRoles("admin"),
+  getCustomersByVillage
+);
+
+router.get(
+  "/villages",
+  protect,
+  authorizeRoles("admin"),
+  getVillageOverview
+);
 /*
 |--------------------------------------------------------------------------
 | ADMIN DASHBOARD

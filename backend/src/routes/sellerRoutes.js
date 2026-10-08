@@ -18,6 +18,24 @@ const {
   "../middleware/sellerQrUploadMiddleware"
 );
 
+
+
+const {
+  getSellerMarketplaceProfile
+} = require("../controllers/sellerController");
+
+
+
+router.get(
+  "/marketplace-profile",
+  protect,
+  authorizeRoles("seller"),
+  getSellerMarketplaceProfile
+);
+
+
+
+
 const {
   getSellerPaymentSettings,
   updateSellerPaymentSettings,

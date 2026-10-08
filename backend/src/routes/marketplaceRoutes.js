@@ -1,63 +1,15 @@
-const express =
-  require("express");
+const express = require("express");
+
+const router = express.Router();
 
 const {
-  getLiveMarketplaceStats
-} =
-  require(
-    "../controllers/marketplaceController"
-  );
-
-
-const {
+  getLiveMarketplaceStats,
   getAdvancedVillageMarketplace
 } = require("../controllers/marketplaceController");
 
-// Before module.exports:
-router.get(
-  "/village",
-  protect,
-  getAdvancedVillageMarketplace
-);
-
-
-// adminRoutes.js
-const {
-  getCustomersByVillage,
-  getVillageOverview
-} = require("../controllers/adminController");
-
-// Before module.exports:
-router.get(
-  "/customers",
-  protect,
-  authorizeRoles("admin"),
-  getCustomersByVillage
-);
-
-router.get(
-  "/villages",
-  protect,
-  authorizeRoles("admin"),
-  getVillageOverview
-);
-
-
-// sellerRoutes.js
-const {
-  getSellerMarketplaceProfile
-} = require("../controllers/sellerController");
-
-// Before module.exports:
-router.get(
-  "/marketplace-profile",
-  protect,
-  authorizeRoles("seller"),
-  getSellerMarketplaceProfile
-);
-
-const router =
-  express.Router();
+// Keep your existing middleware import.
+// Change this path/name only if your project uses a different auth middleware.
+const { protect } = require("../middleware/authMiddleware");
 
 /*
 |--------------------------------------------------------------------------
@@ -73,5 +25,26 @@ router.get(
   getLiveMarketplaceStats
 );
 
-module.exports =
-  router;
+/*
+|--------------------------------------------------------------------------
+| ADVANCED VILLAGE MARKETPLACE
+|--------------------------------------------------------------------------
+|
+| GET /api/marketplace/village
+|
+| Shows:
+| - Same-village products
+| - Same-district products
+| - Other-village products
+| - Village explorer
+| - Marketplace counts
+|
+*/
+
+router.get(
+  "/village",
+  protect,
+  getAdvancedVillageMarketplace
+);
+
+module.exports = router;
