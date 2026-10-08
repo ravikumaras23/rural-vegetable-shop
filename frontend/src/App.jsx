@@ -70,7 +70,7 @@ import NotificationCenterPage from "./pages/NotificationCenterPage.jsx";
 
 const API_URL =
   import.meta.env.VITE_API_URL ||
-  "http://localhost:5000";
+  "https://rural-vegetable-shop.onrender.com/api";
 
 /*
 |--------------------------------------------------------------------------
