@@ -2,51 +2,48 @@ const express = require("express");
 
 const {
   protect
-} = require(
-  "../middleware/authMiddleware"
-);
+} = require("../middleware/authMiddleware");
 
 const {
   authorize
-} = require(
-  "../middleware/roleMiddleware"
-);
+} = require("../middleware/roleMiddleware");
 
 const {
   uploadSellerQrImage
-} = require(
-  "../middleware/sellerQrUploadMiddleware"
-);
-
-
+} = require("../middleware/sellerQrUploadMiddleware");
 
 const {
-  getSellerMarketplaceProfile
-} = require("../controllers/sellerController");
-
-
-
-router.get(
-  "/marketplace-profile",
-  protect,
-  authorizeRoles("seller"),
-  getSellerMarketplaceProfile
-);
-
-
-
-
-const {
+  getSellerMarketplaceProfile,
   getSellerPaymentSettings,
   updateSellerPaymentSettings,
   uploadSellerQr,
   getSellerPublicPaymentSettings
-} = require(
-  "../controllers/sellerController"
-);
+} = require("../controllers/sellerController");
 
-const router =
-  express.Router();
+const router = express.Router();
+
+/*
+|--------------------------------------------------------------------------
+| SELLER MARKETPLACE PROFILE
+|--------------------------------------------------------------------------
+|
+| GET /api/seller/marketplace-profile
+|
+| Returns:
+| - Seller village
+| - Seller district
+| - Seller state
+| - Product statistics
+| - Seller marketplace information
+|
+*/
+
+router.get(
+  "/marketplace-profile",
+  protect,
+  authorize("seller"),
+  getSellerMarketplaceProfile
+);
 
 /*
 |--------------------------------------------------------------------------
@@ -54,6 +51,11 @@ const router =
 |--------------------------------------------------------------------------
 */
 
+/*
+ * Get seller payment settings
+ *
+ * GET /api/seller/payment-settings
+ */
 router.get(
   "/payment-settings",
   protect,
@@ -61,6 +63,11 @@ router.get(
   getSellerPaymentSettings
 );
 
+/*
+ * Update seller payment settings
+ *
+ * PUT /api/seller/payment-settings
+ */
 router.put(
   "/payment-settings",
   protect,
@@ -74,6 +81,11 @@ router.put(
 |--------------------------------------------------------------------------
 */
 
+/*
+ * Upload seller QR image
+ *
+ * POST /api/seller/payment-settings/qr
+ */
 router.post(
   "/payment-settings/qr",
   protect,
@@ -88,6 +100,16 @@ router.post(
 |--------------------------------------------------------------------------
 */
 
+/*
+ * Get seller public payment settings
+ *
+ * GET /api/seller/:sellerId/payment-settings
+ *
+ * Accessible by:
+ * - customer
+ * - seller
+ * - admin
+ */
 router.get(
   "/:sellerId/payment-settings",
   protect,
@@ -99,5 +121,10 @@ router.get(
   getSellerPublicPaymentSettings
 );
 
-module.exports =
-  router;
+/*
+|--------------------------------------------------------------------------
+| EXPORT ROUTER
+|--------------------------------------------------------------------------
+*/
+
+module.exports = router;
