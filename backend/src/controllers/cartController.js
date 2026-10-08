@@ -5,6 +5,146 @@ const Product = require("../models/Product");
 
 const asyncHandler = require("../utils/asyncHandler");
 
+
+/*
+|--------------------------------------------------------------------------
+| CART LOCATION HELPERS
+|--------------------------------------------------------------------------
+*/
+
+const normalizeLocationValue = (value) =>
+  String(value || "")
+    .trim()
+    .replace(/\s+/g, " ")
+    .toLowerCase();
+
+const getCustomerLocation = (user) => ({
+  village:
+    user?.customerProfile?.village ||
+    user?.profile?.village ||
+    user?.village ||
+    user?.address?.village ||
+    user?.shippingAddress?.village ||
+    "",
+  district:
+    user?.customerProfile?.district ||
+    user?.profile?.district ||
+    user?.district ||
+    user?.address?.district ||
+    user?.shippingAddress?.district ||
+    "",
+  state:
+    user?.customerProfile?.state ||
+    user?.profile?.state ||
+    user?.state ||
+    user?.address?.state ||
+    user?.shippingAddress?.state ||
+    ""
+});
+
+const getSellerLocation = (seller) => ({
+  village:
+    seller?.sellerProfile?.village ||
+    seller?.village ||
+    "",
+  district:
+    seller?.sellerProfile?.district ||
+    seller?.district ||
+    "",
+  state:
+    seller?.sellerProfile?.state ||
+    seller?.state ||
+    ""
+});
+
+const decorateCart = (
+  cart,
+  customerLocation
+) => {
+  if (!cart) {
+    return cart;
+  }
+
+  const object =
+    typeof cart.toObject === "function"
+      ? cart.toObject()
+      : cart;
+
+  return {
+    ...object,
+
+    marketplaceLocation: {
+      customerVillage:
+        customerLocation.village ||
+        null,
+      customerDistrict:
+        customerLocation.district ||
+        null
+    },
+
+    items: (
+      object.items || []
+    ).map(
+      (item) => {
+        const seller =
+          item?.product?.seller;
+
+        const sellerLocation =
+          getSellerLocation(
+            seller
+          );
+
+        const sameVillage =
+          Boolean(
+            normalizeLocationValue(
+              customerLocation.village
+            ) &&
+            normalizeLocationValue(
+              customerLocation.village
+            ) ===
+              normalizeLocationValue(
+                sellerLocation.village
+              )
+          );
+
+        const sameDistrict =
+          Boolean(
+            normalizeLocationValue(
+              customerLocation.district
+            ) &&
+            normalizeLocationValue(
+              customerLocation.district
+            ) ===
+              normalizeLocationValue(
+                sellerLocation.district
+              )
+          );
+
+        return {
+          ...item,
+
+          marketplaceLocation: {
+            sellerVillage:
+              sellerLocation.village,
+            sellerDistrict:
+              sellerLocation.district,
+            sellerState:
+              sellerLocation.state,
+            sameVillage,
+            sameDistrict,
+            group:
+              sameVillage
+                ? "same_village"
+                : sameDistrict
+                  ? "same_district"
+                  : "other_village"
+          }
+        };
+      }
+    )
+  };
+};
+
 const isValidObjectId = (id) => {
   return mongoose.Types.ObjectId.isValid(id);
 };
@@ -23,7 +163,7 @@ const getCart = asyncHandler(async (req, res) => {
     populate: {
       path: "seller",
       select:
-        "name email sellerProfile.businessName isActive sellerProfile.approvalStatus"
+        "name email sellerProfile.businessName sellerProfile.farmName sellerProfile.village sellerProfile.district sellerProfile.state isActive sellerProfile.approvalStatus"
     }
   });
 
@@ -38,9 +178,18 @@ const getCart = asyncHandler(async (req, res) => {
     });
   }
 
+  const customerLocation =
+    getCustomerLocation(
+      req.user
+    );
+
   res.status(200).json({
     success: true,
-    data: cart
+    data:
+      decorateCart(
+        cart,
+        customerLocation
+      )
   });
 });
 
@@ -187,7 +336,7 @@ const addToCart = asyncHandler(async (req, res) => {
     populate: {
       path: "seller",
       select:
-        "name email sellerProfile.businessName isActive sellerProfile.approvalStatus"
+        "name email sellerProfile.businessName sellerProfile.farmName sellerProfile.village sellerProfile.district sellerProfile.state isActive sellerProfile.approvalStatus"
     }
   });
 
@@ -286,14 +435,20 @@ const updateCartItem = asyncHandler(
       populate: {
         path: "seller",
         select:
-          "name email sellerProfile.businessName isActive sellerProfile.approvalStatus"
+          "name email sellerProfile.businessName sellerProfile.farmName sellerProfile.village sellerProfile.district sellerProfile.state isActive sellerProfile.approvalStatus"
       }
     });
 
     res.status(200).json({
       success: true,
       message: "Cart updated",
-      data: cart
+      data:
+        decorateCart(
+          cart,
+          getCustomerLocation(
+            req.user
+          )
+        )
     });
   }
 );
@@ -354,7 +509,7 @@ const removeFromCart = asyncHandler(
       populate: {
         path: "seller",
         select:
-          "name email sellerProfile.businessName isActive sellerProfile.approvalStatus"
+          "name email sellerProfile.businessName sellerProfile.farmName sellerProfile.village sellerProfile.district sellerProfile.state isActive sellerProfile.approvalStatus"
       }
     });
 
@@ -362,7 +517,13 @@ const removeFromCart = asyncHandler(
       success: true,
       message:
         "Product removed from cart",
-      data: cart
+      data:
+        decorateCart(
+          cart,
+          getCustomerLocation(
+            req.user
+          )
+        )
     });
   }
 );
@@ -397,7 +558,13 @@ const clearCart = asyncHandler(
     res.status(200).json({
       success: true,
       message: "Cart cleared",
-      data: cart
+      data:
+        decorateCart(
+          cart,
+          getCustomerLocation(
+            req.user
+          )
+        )
     });
   }
 );

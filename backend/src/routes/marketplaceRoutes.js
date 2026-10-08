@@ -8,6 +8,54 @@ const {
     "../controllers/marketplaceController"
   );
 
+
+const {
+  getAdvancedVillageMarketplace
+} = require("../controllers/marketplaceController");
+
+// Before module.exports:
+router.get(
+  "/village",
+  protect,
+  getAdvancedVillageMarketplace
+);
+
+
+// adminRoutes.js
+const {
+  getCustomersByVillage,
+  getVillageOverview
+} = require("../controllers/adminController");
+
+// Before module.exports:
+router.get(
+  "/customers",
+  protect,
+  authorizeRoles("admin"),
+  getCustomersByVillage
+);
+
+router.get(
+  "/villages",
+  protect,
+  authorizeRoles("admin"),
+  getVillageOverview
+);
+
+
+// sellerRoutes.js
+const {
+  getSellerMarketplaceProfile
+} = require("../controllers/sellerController");
+
+// Before module.exports:
+router.get(
+  "/marketplace-profile",
+  protect,
+  authorizeRoles("seller"),
+  getSellerMarketplaceProfile
+);
+
 const router =
   express.Router();
 

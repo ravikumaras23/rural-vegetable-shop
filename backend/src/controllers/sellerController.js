@@ -4,6 +4,12 @@ const mongoose =
 const User =
   require("../models/User");
 
+const Product =
+  require("../models/Product");
+
+const Order =
+  require("../models/Order");
+
 const SellerPaymentSettings =
   require(
     "../models/SellerPaymentSettings"
@@ -16,6 +22,31 @@ const cloudinary =
 
 const asyncHandler =
   require("../utils/asyncHandler");
+/*
+|--------------------------------------------------------------------------
+| SELLER VILLAGE HELPERS
+|--------------------------------------------------------------------------
+*/
+
+const normalizeLocationValue = (value) =>
+  String(value || "")
+    .trim()
+    .replace(/\s+/g, " ")
+    .toLowerCase();
+
+const getSellerLocation = (seller) => ({
+  village:
+    seller?.sellerProfile?.village ||
+    "",
+  district:
+    seller?.sellerProfile?.district ||
+    "",
+  state:
+    seller?.sellerProfile?.state ||
+    ""
+});
+
+
 
 /*
 |--------------------------------------------------------------------------
@@ -804,6 +835,11 @@ const getSellerPublicPaymentSettings =
 
           sellerName,
 
+          location:
+            getSellerLocation(
+              seller
+            ),
+
           paymentSettings: {
             qrEnabled:
               normalized.qrEnabled,
@@ -822,6 +858,153 @@ const getSellerPublicPaymentSettings =
     }
   );
 
+
+/*
+|--------------------------------------------------------------------------
+| SELLER MARKETPLACE PROFILE
+|--------------------------------------------------------------------------
+|
+| GET /api/seller/marketplace-profile
+|
+| Gives the seller a simple village-centric dashboard summary.
+|--------------------------------------------------------------------------
+*/
+
+const getSellerMarketplaceProfile =
+  asyncHandler(
+    async (req, res) => {
+      if (
+        String(
+          req.user.role
+        ) !== "seller"
+      ) {
+        return res.status(403).json({
+          success: false,
+          message:
+            "Seller access is required."
+        });
+      }
+
+      const seller =
+        await User.findById(
+          req.user._id
+        )
+          .select(
+            "name email phone isActive sellerProfile"
+          )
+          .lean();
+
+      if (!seller) {
+        return res.status(404).json({
+          success: false,
+          message:
+            "Seller profile not found."
+        });
+      }
+
+      const location =
+        getSellerLocation(
+          seller
+        );
+
+      const [
+        totalProducts,
+        approvedProducts,
+        outOfStockProducts,
+        orderCount
+      ] =
+        await Promise.all([
+          Product.countDocuments({
+            seller:
+              seller._id
+          }),
+
+          Product.countDocuments({
+            seller:
+              seller._id,
+            status:
+              "approved"
+          }),
+
+          Product.countDocuments({
+            seller:
+              seller._id,
+            status:
+              "out_of_stock"
+          }),
+
+          Order.countDocuments({
+            "items.seller":
+              seller._id
+          })
+        ]);
+
+      const nearbySellerCount =
+        location.village
+          ? await User.countDocuments({
+              role: "seller",
+              isActive: {
+                $ne: false
+              },
+              "sellerProfile.approvalStatus":
+                "approved",
+              "sellerProfile.village":
+                new RegExp(
+                  `^${String(
+                    location.village
+                  )
+                    .trim()
+                    .replace(
+                      /[.*+?^${}()|[\]\\]/g,
+                      "\\$&"
+                    )}$`,
+                  "i"
+                )
+            })
+          : 0;
+
+      return res.status(200).json({
+        success: true,
+
+        data: {
+          seller: {
+            id:
+              seller._id,
+            name:
+              seller.name,
+            businessName:
+              seller
+                .sellerProfile
+                ?.businessName ||
+              seller
+                .sellerProfile
+                ?.farmName ||
+              seller.name
+          },
+
+          location,
+
+          marketplace: {
+            categories: [
+              "Vegetables",
+              "Food",
+              "Readymade"
+            ],
+            sameVillageSellerCount:
+              nearbySellerCount
+          },
+
+          statistics: {
+            totalProducts,
+            approvedProducts,
+            outOfStockProducts,
+            orderCount
+          }
+        }
+      });
+    }
+  );
+
 /*
 |--------------------------------------------------------------------------
 | EXPORTS
@@ -832,5 +1015,6 @@ module.exports = {
   getSellerPaymentSettings,
   updateSellerPaymentSettings,
   uploadSellerQr,
-  getSellerPublicPaymentSettings
+  getSellerPublicPaymentSettings,
+  getSellerMarketplaceProfile
 };

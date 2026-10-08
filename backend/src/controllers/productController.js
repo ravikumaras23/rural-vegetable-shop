@@ -13,6 +13,91 @@ const Product = require("../models/Product");
 const cloudinary = require("../config/cloudinary");
 
 const MAX_PRODUCT_IMAGES = 5;
+/*
+|--------------------------------------------------------------------------
+| VILLAGE / LOCATION HELPERS
+|--------------------------------------------------------------------------
+| Location is used only for marketplace ranking/filtering.
+| Sellers use sellerProfile.village/district/state.
+| Customers may use customerProfile.village/district/state.
+|--------------------------------------------------------------------------
+*/
+
+const normalizeLocationValue = (value) =>
+  String(value || "")
+    .trim()
+    .replace(/\s+/g, " ")
+    .toLowerCase();
+
+const getCustomerLocation = (user) => ({
+  village:
+    user?.customerProfile?.village ||
+    user?.profile?.village ||
+    user?.village ||
+    user?.address?.village ||
+    user?.shippingAddress?.village ||
+    "",
+  district:
+    user?.customerProfile?.district ||
+    user?.profile?.district ||
+    user?.district ||
+    user?.address?.district ||
+    user?.shippingAddress?.district ||
+    "",
+  state:
+    user?.customerProfile?.state ||
+    user?.profile?.state ||
+    user?.state ||
+    user?.address?.state ||
+    user?.shippingAddress?.state ||
+    ""
+});
+
+const getSellerLocation = (seller) => ({
+  village:
+    seller?.sellerProfile?.village ||
+    seller?.village ||
+    "",
+  district:
+    seller?.sellerProfile?.district ||
+    seller?.district ||
+    "",
+  state:
+    seller?.sellerProfile?.state ||
+    seller?.state ||
+    ""
+});
+
+const sameVillage = (customer, seller) => {
+  const customerVillage =
+    normalizeLocationValue(customer?.village);
+  const sellerVillage =
+    normalizeLocationValue(seller?.village);
+
+  return Boolean(
+    customerVillage &&
+    sellerVillage &&
+    customerVillage === sellerVillage
+  );
+};
+
+const sameDistrict = (customer, seller) => {
+  const customerDistrict =
+    normalizeLocationValue(customer?.district);
+  const sellerDistrict =
+    normalizeLocationValue(seller?.district);
+
+  return Boolean(
+    customerDistrict &&
+    sellerDistrict &&
+    customerDistrict === sellerDistrict
+  );
+};
+
+const escapeRegex = (value) =>
+  String(value || "")
+    .replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
 
 /*
 |--------------------------------------------------------------------------
@@ -497,7 +582,10 @@ const getProducts = async (
       organic,
       page = 1,
       limit = 12,
-      sort = "newest"
+      sort = "newest",
+      village,
+      district,
+      villageMode = "prioritized"
     } = req.query;
 
     const pageNumber =
@@ -515,9 +603,29 @@ const getProducts = async (
         50
       );
 
-    const skip =
-      (pageNumber - 1) *
-      limitNumber;
+    const customerLocation =
+      getCustomerLocation(
+        req.user
+      );
+
+    /*
+     * Explicit query location has priority over the logged-in
+     * customer's location. This lets the marketplace explore
+     * another village without changing the customer's profile.
+     */
+    const targetVillage =
+      String(
+        village ||
+        customerLocation.village ||
+        ""
+      ).trim();
+
+    const targetDistrict =
+      String(
+        district ||
+        customerLocation.district ||
+        ""
+      ).trim();
 
     const filter = {
       status: "approved"
@@ -643,28 +751,471 @@ const getProducts = async (
         break;
     }
 
-    const [
-      products,
-      total
-    ] = await Promise.all([
-      Product.find(filter)
-        .populate(
-          "seller",
-          "name sellerProfile.farmName sellerProfile.village sellerProfile.district sellerProfile.state"
-        )
-        .sort(sortOption)
-        .skip(skip)
-        .limit(limitNumber)
-        .lean(),
+    /*
+     * Public/all mode keeps the original product query.
+     * For a customer with a village, prioritized mode returns
+     * same-village products first and other-village products second.
+     */
+    const shouldPrioritizeVillage =
+      !seller &&
+      (
+        villageMode === "prioritized" ||
+        villageMode === "same" ||
+        villageMode === "other" ||
+        villageMode === "district"
+      ) &&
+      Boolean(
+        targetVillage ||
+        targetDistrict
+      );
 
-      Product.countDocuments(
-        filter
-      )
-    ]);
+    let products = [];
+    let total = 0;
+    let sameVillageCount = 0;
+    let otherVillageCount = 0;
+    let sameDistrictCount = 0;
+
+    const sellerSelect =
+      "name email sellerProfile.businessName sellerProfile.farmName sellerProfile.village sellerProfile.district sellerProfile.state isActive sellerProfile.approvalStatus";
+
+    if (
+      shouldPrioritizeVillage
+    ) {
+      /*
+       * Resolve seller IDs by location first. This is much cheaper
+       * than loading every product and sorting thousands of records
+       * in Node.js.
+       */
+      const sellerLocationQuery = {
+        role: "seller",
+        isActive: {
+          $ne: false
+        }
+      };
+
+      if (targetVillage) {
+        sellerLocationQuery[
+          "sellerProfile.village"
+        ] = new RegExp(
+          `^${escapeRegex(targetVillage)}$`,
+          "i"
+        );
+      }
+
+      if (
+        villageMode === "district" &&
+        targetDistrict
+      ) {
+        sellerLocationQuery[
+          "sellerProfile.district"
+        ] = new RegExp(
+          `^${escapeRegex(targetDistrict)}$`,
+          "i"
+        );
+      }
+
+      const locationSellers =
+        await User.find(
+          sellerLocationQuery
+        ).select(
+          "_id sellerProfile.village sellerProfile.district sellerProfile.state"
+        ).lean();
+
+      const locationSellerIds =
+        locationSellers.map(
+          (item) => item._id
+        );
+
+      /*
+       * For "same", only same-village products are returned.
+       * For "other", products from the customer's village are
+       * excluded.
+       * For "district", products in the district are returned.
+       * For "prioritized", same village comes before all others.
+       */
+      if (
+        villageMode === "same"
+      ) {
+        if (
+          locationSellerIds.length === 0
+        ) {
+          products = [];
+          total = 0;
+        } else {
+          const sameFilter = {
+            ...filter,
+            seller: {
+              $in: locationSellerIds
+            }
+          };
+
+          products =
+            await Product.find(
+              sameFilter
+            )
+              .populate(
+                "seller",
+                sellerSelect
+              )
+              .sort(sortOption)
+              .skip(
+                (pageNumber - 1) *
+                  limitNumber
+              )
+              .limit(limitNumber)
+              .lean();
+
+          total =
+            await Product.countDocuments(
+              sameFilter
+            );
+        }
+      } else if (
+        villageMode === "district"
+      ) {
+        if (
+          locationSellerIds.length === 0
+        ) {
+          products = [];
+          total = 0;
+        } else {
+          const districtFilter = {
+            ...filter,
+            seller: {
+              $in: locationSellerIds
+            }
+          };
+
+          products =
+            await Product.find(
+              districtFilter
+            )
+              .populate(
+                "seller",
+                sellerSelect
+              )
+              .sort(sortOption)
+              .skip(
+                (pageNumber - 1) *
+                  limitNumber
+              )
+              .limit(limitNumber)
+              .lean();
+
+          total =
+            await Product.countDocuments(
+              districtFilter
+            );
+        }
+      } else {
+        const sameSellerIds =
+          locationSellerIds;
+
+        const sameFilter =
+          sameSellerIds.length > 0
+            ? {
+                ...filter,
+                seller: {
+                  $in: sameSellerIds
+                }
+              }
+            : {
+                ...filter,
+                _id: {
+                  $exists: false
+                }
+              };
+
+        const otherFilter =
+          sameSellerIds.length > 0
+            ? {
+                ...filter,
+                seller: {
+                  $nin: sameSellerIds
+                }
+              }
+            : {
+                ...filter
+              };
+
+        sameVillageCount =
+          await Product.countDocuments(
+            sameFilter
+          );
+
+        otherVillageCount =
+          await Product.countDocuments(
+            otherFilter
+          );
+
+        total =
+          sameVillageCount +
+          otherVillageCount;
+
+        if (
+          villageMode === "other"
+        ) {
+          products =
+            await Product.find(
+              otherFilter
+            )
+              .populate(
+                "seller",
+                sellerSelect
+              )
+              .sort(sortOption)
+              .skip(
+                (pageNumber - 1) *
+                  limitNumber
+              )
+              .limit(limitNumber)
+              .lean();
+        } else {
+          const skip =
+            (pageNumber - 1) *
+            limitNumber;
+
+          const sameSkip =
+            Math.min(
+              skip,
+              sameVillageCount
+            );
+
+          const sameRemaining =
+            Math.max(
+              sameVillageCount -
+                sameSkip,
+              0
+            );
+
+          const sameLimit =
+            Math.min(
+              limitNumber,
+              sameRemaining
+            );
+
+          const sameProducts =
+            sameLimit > 0
+              ? await Product.find(
+                  sameFilter
+                )
+                  .populate(
+                    "seller",
+                    sellerSelect
+                  )
+                  .sort(sortOption)
+                  .skip(sameSkip)
+                  .limit(sameLimit)
+                  .lean()
+              : [];
+
+          const remainingLimit =
+            limitNumber -
+            sameProducts.length;
+
+          const otherSkip =
+            Math.max(
+              skip -
+                sameVillageCount,
+              0
+            );
+
+          const otherProducts =
+            remainingLimit > 0
+              ? await Product.find(
+                  otherFilter
+                )
+                  .populate(
+                    "seller",
+                    sellerSelect
+                  )
+                  .sort(sortOption)
+                  .skip(otherSkip)
+                  .limit(
+                    remainingLimit
+                  )
+                  .lean()
+              : [];
+
+          products = [
+            ...sameProducts,
+            ...otherProducts
+          ];
+        }
+      }
+
+      /*
+       * District count is useful to the advanced marketplace UI.
+       */
+      if (
+        targetDistrict &&
+        villageMode === "prioritized"
+      ) {
+        const districtSellers =
+          await User.find({
+            role: "seller",
+            isActive: {
+              $ne: false
+            },
+            "sellerProfile.district":
+              new RegExp(
+                `^${escapeRegex(
+                  targetDistrict
+                )}$`,
+                "i"
+              )
+          }).select("_id").lean();
+
+        sameDistrictCount =
+          await Product.countDocuments({
+            ...filter,
+            seller: {
+              $in:
+                districtSellers.map(
+                  (item) =>
+                    item._id
+                )
+            }
+          });
+      }
+    } else {
+      const queryFilter = {
+        ...filter
+      };
+
+      products =
+        await Product.find(
+          queryFilter
+        )
+          .populate(
+            "seller",
+            sellerSelect
+          )
+          .sort(sortOption)
+          .skip(
+            (pageNumber - 1) *
+              limitNumber
+          )
+          .limit(limitNumber)
+          .lean();
+
+      total =
+        await Product.countDocuments(
+          queryFilter
+        );
+    }
+
+    /*
+     * Attach a lightweight location classification to every product.
+     * This allows the frontend to display:
+     *   Same village
+     *   Same district
+     *   Other village
+     */
+    const classifiedProducts =
+      products.map(
+        (product) => {
+          const sellerLocation =
+            getSellerLocation(
+              product.seller
+            );
+
+          const same =
+            normalizeLocationValue(
+              targetVillage
+            ) ===
+              normalizeLocationValue(
+                sellerLocation.village
+              ) &&
+            Boolean(
+              normalizeLocationValue(
+                targetVillage
+              )
+            );
+
+          const districtMatch =
+            normalizeLocationValue(
+              targetDistrict
+            ) ===
+              normalizeLocationValue(
+                sellerLocation.district
+              ) &&
+            Boolean(
+              normalizeLocationValue(
+                targetDistrict
+              )
+            );
+
+          return {
+            ...product,
+
+            marketplaceLocation: {
+              sellerVillage:
+                sellerLocation.village,
+              sellerDistrict:
+                sellerLocation.district,
+              sellerState:
+                sellerLocation.state,
+              sameVillage: same,
+              sameDistrict:
+                districtMatch,
+              group:
+                same
+                  ? "same_village"
+                  : districtMatch
+                    ? "same_district"
+                    : "other_village"
+            }
+          };
+        }
+      );
+
+    const pages =
+      Math.ceil(
+        total /
+          limitNumber
+      );
 
     return res.status(200).json({
       success: true,
-      products,
+
+      products:
+        classifiedProducts,
+
+      marketplace: {
+        customerVillage:
+          customerLocation.village ||
+          null,
+
+        customerDistrict:
+          customerLocation.district ||
+          null,
+
+        selectedVillage:
+          targetVillage ||
+          null,
+
+        selectedDistrict:
+          targetDistrict ||
+          null,
+
+        mode:
+          villageMode,
+
+        sameVillageCount:
+          sameVillageCount,
+
+        sameDistrictCount:
+          sameDistrictCount,
+
+        otherVillageCount:
+          otherVillageCount,
+
+        locationAvailable:
+          Boolean(
+            customerLocation.village
+          )
+      },
 
       pagination: {
         page:
@@ -675,18 +1226,11 @@ const getProducts = async (
 
         total,
 
-        pages:
-          Math.ceil(
-            total /
-              limitNumber
-          ),
+        pages,
 
         hasNextPage:
           pageNumber <
-          Math.ceil(
-            total /
-              limitNumber
-          ),
+          pages,
 
         hasPreviousPage:
           pageNumber > 1
@@ -837,6 +1381,10 @@ const getMyProducts =
         total
       ] = await Promise.all([
         Product.find(filter)
+          .populate(
+            "seller",
+            "name email sellerProfile.businessName sellerProfile.farmName sellerProfile.village sellerProfile.district sellerProfile.state"
+          )
           .sort({
             createdAt: -1
           })

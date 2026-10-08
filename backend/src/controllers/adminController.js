@@ -5,6 +5,91 @@ const Product = require("../models/Product");
 const Order = require("../models/Order");
 
 const asyncHandler = require("../utils/asyncHandler");
+/*
+|--------------------------------------------------------------------------
+| VILLAGE / LOCATION HELPERS
+|--------------------------------------------------------------------------
+| Location is used only for marketplace ranking/filtering.
+| Sellers use sellerProfile.village/district/state.
+| Customers may use customerProfile.village/district/state.
+|--------------------------------------------------------------------------
+*/
+
+const normalizeLocationValue = (value) =>
+  String(value || "")
+    .trim()
+    .replace(/\s+/g, " ")
+    .toLowerCase();
+
+const getCustomerLocation = (user) => ({
+  village:
+    user?.customerProfile?.village ||
+    user?.profile?.village ||
+    user?.village ||
+    user?.address?.village ||
+    user?.shippingAddress?.village ||
+    "",
+  district:
+    user?.customerProfile?.district ||
+    user?.profile?.district ||
+    user?.district ||
+    user?.address?.district ||
+    user?.shippingAddress?.district ||
+    "",
+  state:
+    user?.customerProfile?.state ||
+    user?.profile?.state ||
+    user?.state ||
+    user?.address?.state ||
+    user?.shippingAddress?.state ||
+    ""
+});
+
+const getSellerLocation = (seller) => ({
+  village:
+    seller?.sellerProfile?.village ||
+    seller?.village ||
+    "",
+  district:
+    seller?.sellerProfile?.district ||
+    seller?.district ||
+    "",
+  state:
+    seller?.sellerProfile?.state ||
+    seller?.state ||
+    ""
+});
+
+const sameVillage = (customer, seller) => {
+  const customerVillage =
+    normalizeLocationValue(customer?.village);
+  const sellerVillage =
+    normalizeLocationValue(seller?.village);
+
+  return Boolean(
+    customerVillage &&
+    sellerVillage &&
+    customerVillage === sellerVillage
+  );
+};
+
+const sameDistrict = (customer, seller) => {
+  const customerDistrict =
+    normalizeLocationValue(customer?.district);
+  const sellerDistrict =
+    normalizeLocationValue(seller?.district);
+
+  return Boolean(
+    customerDistrict &&
+    sellerDistrict &&
+    customerDistrict === sellerDistrict
+  );
+};
+
+const escapeRegex = (value) =>
+  String(value || "")
+    .replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
 
 const { notifyUser } = require("../notifications/seller/sellerNotificationService");
 
@@ -300,7 +385,9 @@ const getSellers = asyncHandler(
       status,
       page = 1,
       limit = 20,
-      search
+      search,
+      village,
+      district
     } = req.query;
 
     const currentPage = Math.max(
@@ -319,6 +406,40 @@ const getSellers = asyncHandler(
     const query = {
       role: "seller"
     };
+
+    /*
+     * Village-aware admin navigation.
+     *
+     * GET /api/admin/sellers?village=Alambagiri
+     * GET /api/admin/sellers?district=Chikkaballapur
+     */
+    if (
+      village &&
+      String(village).trim()
+    ) {
+      query[
+        "sellerProfile.village"
+      ] = new RegExp(
+        `^${escapeRegex(
+          String(village).trim()
+        )}$`,
+        "i"
+      );
+    }
+
+    if (
+      district &&
+      String(district).trim()
+    ) {
+      query[
+        "sellerProfile.district"
+      ] = new RegExp(
+        `^${escapeRegex(
+          String(district).trim()
+        )}$`,
+        "i"
+      );
+    }
 
     /*
      * Seller approval status filter
@@ -927,6 +1048,63 @@ const getProductsForModeration =
         );
 
       const query = {};
+
+      /*
+       * Filter products by the seller's village/district.
+       * We resolve seller IDs first so the existing product query
+       * remains efficient and pagination stays correct.
+       */
+      if (
+        (village && String(village).trim()) ||
+        (district && String(district).trim())
+      ) {
+        const sellerQuery = {
+          role: "seller"
+        };
+
+        if (
+          village &&
+          String(village).trim()
+        ) {
+          sellerQuery[
+            "sellerProfile.village"
+          ] = new RegExp(
+            `^${escapeRegex(
+              String(village).trim()
+            )}$`,
+            "i"
+          );
+        }
+
+        if (
+          district &&
+          String(district).trim()
+        ) {
+          sellerQuery[
+            "sellerProfile.district"
+          ] = new RegExp(
+            `^${escapeRegex(
+              String(district).trim()
+            )}$`,
+            "i"
+          );
+        }
+
+        const villageSellers =
+          await User.find(
+            sellerQuery
+          )
+            .select("_id")
+            .lean();
+
+        query.seller = {
+          $in:
+            villageSellers.map(
+              (seller) =>
+                seller._id
+            )
+        };
+      }
 
       /*
        * Product status filter
@@ -1703,6 +1881,465 @@ const updateProductModerationStatus =
     }
   );
 
+
+/*
+|--------------------------------------------------------------------------
+| GET CUSTOMERS BY VILLAGE
+|--------------------------------------------------------------------------
+|
+| GET /api/admin/customers?village=Alambagiri
+|
+| Admin receives customer details grouped by the customer's saved
+| profile location.
+|--------------------------------------------------------------------------
+*/
+
+const getCustomersByVillage =
+  asyncHandler(
+    async (req, res) => {
+      const {
+        village,
+        district,
+        page = 1,
+        limit = 20,
+        search
+      } = req.query;
+
+      const currentPage =
+        Math.max(
+          Number(page) || 1,
+          1
+        );
+
+      const currentLimit =
+        Math.min(
+          Math.max(
+            Number(limit) || 20,
+            1
+          ),
+          100
+        );
+
+      const query = {
+        role: "customer"
+      };
+
+      if (
+        village &&
+        String(village).trim()
+      ) {
+        query[
+          "customerProfile.village"
+        ] = new RegExp(
+          `^${escapeRegex(
+            String(village).trim()
+          )}$`,
+          "i"
+        );
+      }
+
+      if (
+        district &&
+        String(district).trim()
+      ) {
+        query[
+          "customerProfile.district"
+        ] = new RegExp(
+          `^${escapeRegex(
+            String(district).trim()
+          )}$`,
+          "i"
+        );
+      }
+
+      if (
+        search &&
+        String(search).trim()
+      ) {
+        const regex =
+          new RegExp(
+            escapeRegex(
+              String(search).trim()
+            ),
+            "i"
+          );
+
+        query.$or = [
+          {
+            name: regex
+          },
+          {
+            email: regex
+          },
+          {
+            phone: regex
+          }
+        ];
+      }
+
+      const skip =
+        (currentPage - 1) *
+        currentLimit;
+
+      const [
+        customers,
+        total
+      ] =
+        await Promise.all([
+          User.find(query)
+            .select(
+              "-password -passwordResetToken -passwordResetExpires"
+            )
+            .sort({
+              createdAt: -1
+            })
+            .skip(skip)
+            .limit(
+              currentLimit
+            )
+            .lean(),
+
+          User.countDocuments(
+            query
+          )
+        ]);
+
+      return res.status(200).json({
+        success: true,
+
+        data:
+          customers.map(
+            (customer) => ({
+              ...customer,
+
+              location: {
+                village:
+                  customer
+                    .customerProfile
+                    ?.village ||
+                  "",
+                district:
+                  customer
+                    .customerProfile
+                    ?.district ||
+                  "",
+                state:
+                  customer
+                    .customerProfile
+                    ?.state ||
+                  ""
+              }
+            })
+          ),
+
+        pagination: {
+          page:
+            currentPage,
+          limit:
+            currentLimit,
+          total,
+          pages:
+            Math.ceil(
+              total /
+                currentLimit
+            )
+        }
+      });
+    }
+  );
+
+/*
+|--------------------------------------------------------------------------
+| GET VILLAGE OVERVIEW
+|--------------------------------------------------------------------------
+|
+| GET /api/admin/villages
+|
+| One response gives the admin:
+|   - customers
+|   - sellers
+|   - approved products
+|   - orders
+| for each village.
+|--------------------------------------------------------------------------
+*/
+
+const getVillageOverview =
+  asyncHandler(
+    async (req, res) => {
+      const {
+        village,
+        district
+      } = req.query;
+
+      const sellerMatch = {
+        role: "seller"
+      };
+
+      const customerMatch = {
+        role: "customer"
+      };
+
+      if (
+        village &&
+        String(village).trim()
+      ) {
+        const villageRegex =
+          new RegExp(
+            `^${escapeRegex(
+              String(village).trim()
+            )}$`,
+            "i"
+          );
+
+        sellerMatch[
+          "sellerProfile.village"
+        ] = villageRegex;
+
+        customerMatch[
+          "customerProfile.village"
+        ] = villageRegex;
+      }
+
+      if (
+        district &&
+        String(district).trim()
+      ) {
+        const districtRegex =
+          new RegExp(
+            `^${escapeRegex(
+              String(district).trim()
+            )}$`,
+            "i"
+          );
+
+        sellerMatch[
+          "sellerProfile.district"
+        ] = districtRegex;
+
+        customerMatch[
+          "customerProfile.district"
+        ] = districtRegex;
+      }
+
+      const [
+        sellers,
+        customers
+      ] =
+        await Promise.all([
+          User.find(
+            sellerMatch
+          )
+            .select(
+              "_id name email phone isActive sellerProfile"
+            )
+            .sort({
+              createdAt: -1
+            })
+            .lean(),
+
+          User.find(
+            customerMatch
+          )
+            .select(
+              "_id name email phone isActive customerProfile"
+            )
+            .sort({
+              createdAt: -1
+            })
+            .lean()
+        ]);
+
+      const sellerIds =
+        sellers.map(
+          (seller) =>
+            seller._id
+        );
+
+      const [
+        productCount,
+        orderCount
+      ] =
+        await Promise.all([
+          Product.countDocuments({
+            seller: {
+              $in:
+                sellerIds
+            },
+            status: "approved"
+          }),
+
+          Order.countDocuments({
+            "items.seller": {
+              $in:
+                sellerIds
+            }
+          })
+        ]);
+
+      /*
+       * If no location was specified, also provide a village index.
+       * This is useful for the admin's village explorer.
+       */
+      const villageGroups =
+        await User.aggregate([
+          {
+            $match: {
+              role: {
+                $in: [
+                  "seller",
+                  "customer"
+                ]
+              }
+            }
+          },
+          {
+            $project: {
+              role: 1,
+              village: {
+                $cond: [
+                  {
+                    $eq: [
+                      "$role",
+                      "seller"
+                    ]
+                  },
+                  "$sellerProfile.village",
+                  "$customerProfile.village"
+                ]
+              },
+              district: {
+                $cond: [
+                  {
+                    $eq: [
+                      "$role",
+                      "seller"
+                    ]
+                  },
+                  "$sellerProfile.district",
+                  "$customerProfile.district"
+                ]
+              },
+              state: {
+                $cond: [
+                  {
+                    $eq: [
+                      "$role",
+                      "seller"
+                    ]
+                  },
+                  "$sellerProfile.state",
+                  "$customerProfile.state"
+                ]
+              }
+            }
+          },
+          {
+            $match: {
+              village: {
+                $exists: true,
+                $nin: [
+                  null,
+                  ""
+                ]
+              }
+            }
+          },
+          {
+            $group: {
+              _id: {
+                village: "$village",
+                district: "$district",
+                state: "$state"
+              },
+              customers: {
+                $sum: {
+                  $cond: [
+                    {
+                      $eq: [
+                        "$role",
+                        "customer"
+                      ]
+                    },
+                    1,
+                    0
+                  ]
+                }
+              },
+              sellers: {
+                $sum: {
+                  $cond: [
+                    {
+                      $eq: [
+                        "$role",
+                        "seller"
+                      ]
+                    },
+                    1,
+                    0
+                  ]
+                }
+              }
+            }
+          },
+          {
+            $sort: {
+              sellers: -1,
+              customers: -1,
+              "_id.village": 1
+            }
+          }
+        ]);
+
+      return res.status(200).json({
+        success: true,
+
+        data: {
+          selectedLocation: {
+            village:
+              village ||
+              null,
+            district:
+              district ||
+              null
+          },
+
+          summary: {
+            sellers:
+              sellers.length,
+            customers:
+              customers.length,
+            approvedProducts:
+              productCount,
+            orders:
+              orderCount
+          },
+
+          sellers,
+          customers,
+
+          villages:
+            villageGroups.map(
+              (group) => ({
+                village:
+                  group._id.village,
+                district:
+                  group._id.district ||
+                  "",
+                state:
+                  group._id.state ||
+                  "",
+                sellers:
+                  group.sellers,
+                customers:
+                  group.customers
+              })
+            )
+        }
+      });
+    }
+  );
+
 /*
 |--------------------------------------------------------------------------
 | EXPORT
@@ -1712,6 +2349,8 @@ const updateProductModerationStatus =
 module.exports = {
   getDashboardStats,
   getSellers,
+  getCustomersByVillage,
+  getVillageOverview,
   approveSeller,
   rejectSeller,
   updateSellerStatus,

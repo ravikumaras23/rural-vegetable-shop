@@ -29,6 +29,140 @@ const asyncHandler =
 
 const DELIVERY_FREE_THRESHOLD = 500;
 const STANDARD_DELIVERY_CHARGE = 40;
+/*
+|--------------------------------------------------------------------------
+| CUSTOMER / SELLER VILLAGE HELPERS
+|--------------------------------------------------------------------------
+*/
+
+const normalizeLocationValue = (value) =>
+  String(value || "")
+    .trim()
+    .replace(/\s+/g, " ")
+    .toLowerCase();
+
+const getCustomerLocation = (user) => ({
+  village:
+    user?.customerProfile?.village ||
+    user?.profile?.village ||
+    user?.village ||
+    user?.address?.village ||
+    user?.shippingAddress?.village ||
+    "",
+  district:
+    user?.customerProfile?.district ||
+    user?.profile?.district ||
+    user?.district ||
+    user?.address?.district ||
+    user?.shippingAddress?.district ||
+    "",
+  state:
+    user?.customerProfile?.state ||
+    user?.profile?.state ||
+    user?.state ||
+    user?.address?.state ||
+    user?.shippingAddress?.state ||
+    ""
+});
+
+const getSellerLocation = (seller) => ({
+  village:
+    seller?.sellerProfile?.village ||
+    seller?.village ||
+    "",
+  district:
+    seller?.sellerProfile?.district ||
+    seller?.district ||
+    "",
+  state:
+    seller?.sellerProfile?.state ||
+    seller?.state ||
+    ""
+});
+
+const enrichOrderLocation =
+  (order, customerLocation) => {
+    if (!order) {
+      return order;
+    }
+
+    const object =
+      typeof order.toObject === "function"
+        ? order.toObject()
+        : order;
+
+    return {
+      ...object,
+
+      marketplaceLocation: {
+        customerVillage:
+          customerLocation.village ||
+          "",
+        customerDistrict:
+          customerLocation.district ||
+          "",
+        customerState:
+          customerLocation.state ||
+          ""
+      },
+
+      items: (
+        object.items || []
+      ).map(
+        (item) => {
+          const sellerLocation =
+            getSellerLocation(
+              item.seller
+            );
+
+          const sameVillage =
+            Boolean(
+              normalizeLocationValue(
+                customerLocation.village
+              ) &&
+              normalizeLocationValue(
+                customerLocation.village
+              ) ===
+                normalizeLocationValue(
+                  sellerLocation.village
+                )
+            );
+
+          return {
+            ...item,
+
+            marketplaceLocation: {
+              sellerVillage:
+                sellerLocation.village,
+              sellerDistrict:
+                sellerLocation.district,
+              sellerState:
+                sellerLocation.state,
+              sameVillage,
+              sameDistrict:
+                Boolean(
+                  normalizeLocationValue(
+                    customerLocation.district
+                  ) &&
+                  normalizeLocationValue(
+                    customerLocation.district
+                  ) ===
+                    normalizeLocationValue(
+                      sellerLocation.district
+                    )
+                ),
+              group:
+                sameVillage
+                  ? "same_village"
+                  : "other_village"
+            }
+          };
+        }
+      )
+    };
+  };
+
+
 
 const PAYMENT_TIMEOUT_MINUTES = Math.max(
   Number(
@@ -974,10 +1108,27 @@ const createOrder =
           });
       }
 
-      const normalizedAddress =
-        normalizeShippingAddress(
-          shippingAddress
+      const customerLocation =
+        getCustomerLocation(
+          req.user
         );
+
+      const normalizedAddress =
+        normalizeShippingAddress({
+          ...shippingAddress,
+
+          village:
+            shippingAddress?.village ||
+            customerLocation.village,
+
+          district:
+            shippingAddress?.district ||
+            customerLocation.district,
+
+          state:
+            shippingAddress?.state ||
+            customerLocation.state
+        });
 
       const session =
         await mongoose.startSession();
@@ -1671,7 +1822,22 @@ const createOrder =
           message,
 
           data:
-            createdOrder
+            enrichOrderLocation(
+              createdOrder,
+              customerLocation
+            ),
+
+          marketplaceLocation: {
+            customerVillage:
+              customerLocation.village ||
+              null,
+            customerDistrict:
+              customerLocation.district ||
+              null,
+            customerState:
+              customerLocation.state ||
+              null
+          }
         });
     }
   );

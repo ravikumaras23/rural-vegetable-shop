@@ -27,6 +27,150 @@ const {
 const isValidObjectId = (id) => {
   return mongoose.Types.ObjectId.isValid(id);
 };
+/*
+|--------------------------------------------------------------------------
+| VILLAGE / LOCATION HELPERS
+|--------------------------------------------------------------------------
+| Location is used only for marketplace ranking/filtering.
+| Sellers use sellerProfile.village/district/state.
+| Customers may use customerProfile.village/district/state.
+|--------------------------------------------------------------------------
+*/
+
+const normalizeLocationValue = (value) =>
+  String(value || "")
+    .trim()
+    .replace(/\s+/g, " ")
+    .toLowerCase();
+
+const getCustomerLocation = (user) => ({
+  village:
+    user?.customerProfile?.village ||
+    user?.profile?.village ||
+    user?.village ||
+    user?.address?.village ||
+    user?.shippingAddress?.village ||
+    "",
+  district:
+    user?.customerProfile?.district ||
+    user?.profile?.district ||
+    user?.district ||
+    user?.address?.district ||
+    user?.shippingAddress?.district ||
+    "",
+  state:
+    user?.customerProfile?.state ||
+    user?.profile?.state ||
+    user?.state ||
+    user?.address?.state ||
+    user?.shippingAddress?.state ||
+    ""
+});
+
+const getSellerLocation = (seller) => ({
+  village:
+    seller?.sellerProfile?.village ||
+    seller?.village ||
+    "",
+  district:
+    seller?.sellerProfile?.district ||
+    seller?.district ||
+    "",
+  state:
+    seller?.sellerProfile?.state ||
+    seller?.state ||
+    ""
+});
+
+const sameVillage = (customer, seller) => {
+  const customerVillage =
+    normalizeLocationValue(customer?.village);
+  const sellerVillage =
+    normalizeLocationValue(seller?.village);
+
+  return Boolean(
+    customerVillage &&
+    sellerVillage &&
+    customerVillage === sellerVillage
+  );
+};
+
+const sameDistrict = (customer, seller) => {
+  const customerDistrict =
+    normalizeLocationValue(customer?.district);
+  const sellerDistrict =
+    normalizeLocationValue(seller?.district);
+
+  return Boolean(
+    customerDistrict &&
+    sellerDistrict &&
+    customerDistrict === sellerDistrict
+  );
+};
+
+const escapeRegex = (value) =>
+  String(value || "")
+    .replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+const findUserIdsByLocation = async ({
+  role,
+  village,
+  district
+}) => {
+  const query = {
+    role
+  };
+
+  if (
+    village &&
+    String(village).trim()
+  ) {
+    const villagePath =
+      role === "seller"
+        ? "sellerProfile.village"
+        : "customerProfile.village";
+
+    query[villagePath] =
+      new RegExp(
+        `^${escapeRegex(
+          String(village).trim()
+        )}$`,
+        "i"
+      );
+  }
+
+  if (
+    district &&
+    String(district).trim()
+  ) {
+    const districtPath =
+      role === "seller"
+        ? "sellerProfile.district"
+        : "customerProfile.district";
+
+    query[districtPath] =
+      new RegExp(
+        `^${escapeRegex(
+          String(district).trim()
+        )}$`,
+        "i"
+      );
+  }
+
+  const users =
+    await User.find(
+      query
+    )
+      .select("_id")
+      .lean();
+
+  return users.map(
+    (user) =>
+      user._id
+  );
+};
+
+
 
 /*
 |--------------------------------------------------------------------------
@@ -437,7 +581,9 @@ const getSellerOrders =
       const {
         status,
         page = 1,
-        limit = 10
+        limit = 10,
+        village,
+        district
       } = req.query;
 
       const currentPage =
@@ -484,6 +630,23 @@ const getSellerOrders =
           req.user._id
       };
 
+      if (
+        (village && String(village).trim()) ||
+        (district && String(district).trim())
+      ) {
+        const customerIds =
+          await findUserIdsByLocation({
+            role: "customer",
+            village,
+            district
+          });
+
+        query.customer = {
+          $in:
+            customerIds
+        };
+      }
+
       if (status) {
         query.orderStatus =
           status;
@@ -501,7 +664,7 @@ const getSellerOrders =
           Order.find(query)
             .populate(
               "customer",
-              "name email phone"
+              "name email phone customerProfile"
             )
             .populate(
               "items.product",
@@ -509,7 +672,7 @@ const getSellerOrders =
             )
             .populate(
               "items.seller",
-              "name email sellerProfile.businessName"
+              "name email sellerProfile.businessName sellerProfile.farmName sellerProfile.village sellerProfile.district sellerProfile.state"
             )
             .sort({
               createdAt: -1
@@ -2093,7 +2256,9 @@ const getAdminOrders =
         status,
         page = 1,
         limit = 20,
-        search
+        search,
+        village,
+        district
       } = req.query;
 
       const currentPage =
@@ -2112,6 +2277,44 @@ const getAdminOrders =
         );
 
       const query = {};
+
+      if (
+        (village && String(village).trim()) ||
+        (district && String(district).trim())
+      ) {
+        const [
+          customerIds,
+          sellerIds
+        ] =
+          await Promise.all([
+            findUserIdsByLocation({
+              role: "customer",
+              village,
+              district
+            }),
+
+            findUserIdsByLocation({
+              role: "seller",
+              village,
+              district
+            })
+          ]);
+
+        query.$or = [
+          {
+            customer: {
+              $in:
+                customerIds
+            }
+          },
+          {
+            "items.seller": {
+              $in:
+                sellerIds
+            }
+          }
+        ];
+      }
 
       if (status) {
         if (
@@ -2156,11 +2359,11 @@ const getAdminOrders =
           Order.find(query)
             .populate(
               "customer",
-              "name email phone"
+              "name email phone customerProfile"
             )
             .populate(
               "items.seller",
-              "name email sellerProfile.businessName"
+              "name email sellerProfile.businessName sellerProfile.farmName sellerProfile.village sellerProfile.district sellerProfile.state"
             )
             .populate(
               "items.product",
@@ -2583,11 +2786,11 @@ const updateAdminOrderStatus =
           )
             .populate(
               "customer",
-              "name email phone"
+              "name email phone customerProfile"
             )
             .populate(
               "items.seller",
-              "name email sellerProfile.businessName"
+              "name email sellerProfile.businessName sellerProfile.farmName sellerProfile.village sellerProfile.district sellerProfile.state"
             );
 
         /*
@@ -2812,11 +3015,11 @@ const updateAdminOrderStatus =
           )
             .populate(
               "customer",
-              "name email phone"
+              "name email phone customerProfile"
             )
             .populate(
               "items.seller",
-              "name email sellerProfile.businessName"
+              "name email sellerProfile.businessName sellerProfile.farmName sellerProfile.village sellerProfile.district sellerProfile.state"
             )
             .populate(
               "items.product",

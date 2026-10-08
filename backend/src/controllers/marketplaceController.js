@@ -9,6 +9,91 @@ const Order =
 
 const asyncHandler =
   require("../utils/asyncHandler");
+/*
+|--------------------------------------------------------------------------
+| VILLAGE / LOCATION HELPERS
+|--------------------------------------------------------------------------
+| Location is used only for marketplace ranking/filtering.
+| Sellers use sellerProfile.village/district/state.
+| Customers may use customerProfile.village/district/state.
+|--------------------------------------------------------------------------
+*/
+
+const normalizeLocationValue = (value) =>
+  String(value || "")
+    .trim()
+    .replace(/\s+/g, " ")
+    .toLowerCase();
+
+const getCustomerLocation = (user) => ({
+  village:
+    user?.customerProfile?.village ||
+    user?.profile?.village ||
+    user?.village ||
+    user?.address?.village ||
+    user?.shippingAddress?.village ||
+    "",
+  district:
+    user?.customerProfile?.district ||
+    user?.profile?.district ||
+    user?.district ||
+    user?.address?.district ||
+    user?.shippingAddress?.district ||
+    "",
+  state:
+    user?.customerProfile?.state ||
+    user?.profile?.state ||
+    user?.state ||
+    user?.address?.state ||
+    user?.shippingAddress?.state ||
+    ""
+});
+
+const getSellerLocation = (seller) => ({
+  village:
+    seller?.sellerProfile?.village ||
+    seller?.village ||
+    "",
+  district:
+    seller?.sellerProfile?.district ||
+    seller?.district ||
+    "",
+  state:
+    seller?.sellerProfile?.state ||
+    seller?.state ||
+    ""
+});
+
+const sameVillage = (customer, seller) => {
+  const customerVillage =
+    normalizeLocationValue(customer?.village);
+  const sellerVillage =
+    normalizeLocationValue(seller?.village);
+
+  return Boolean(
+    customerVillage &&
+    sellerVillage &&
+    customerVillage === sellerVillage
+  );
+};
+
+const sameDistrict = (customer, seller) => {
+  const customerDistrict =
+    normalizeLocationValue(customer?.district);
+  const sellerDistrict =
+    normalizeLocationValue(seller?.district);
+
+  return Boolean(
+    customerDistrict &&
+    sellerDistrict &&
+    customerDistrict === sellerDistrict
+  );
+};
+
+const escapeRegex = (value) =>
+  String(value || "")
+    .replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
 
 /*
 |--------------------------------------------------------------------------
@@ -839,6 +924,603 @@ const getLiveMarketplaceStats =
     }
   );
 
+
+/*
+|--------------------------------------------------------------------------
+| ADVANCED VILLAGE MARKETPLACE
+|--------------------------------------------------------------------------
+|
+| GET /api/marketplace/village
+|
+| Customer experience:
+|   1. Same-village products first.
+|   2. Same-district products next.
+|   3. Other-village products remain available.
+|
+| Query:
+|   village       - optional village to explore
+|   district      - optional district to explore
+|   category      - vegetables / food / readymade / custom
+|   search        - product search
+|   mode          - prioritized / same / district / other / all
+|   limit         - maximum products returned
+|--------------------------------------------------------------------------
+*/
+
+const getAdvancedVillageMarketplace =
+  asyncHandler(
+    async (req, res) => {
+      const {
+        village,
+        district,
+        category,
+        search,
+        mode = "prioritized",
+        limit = 60
+      } = req.query;
+
+      const customerLocation =
+        getCustomerLocation(
+          req.user
+        );
+
+      const selectedVillage =
+        String(
+          village ||
+          customerLocation.village ||
+          ""
+        ).trim();
+
+      const selectedDistrict =
+        String(
+          district ||
+          customerLocation.district ||
+          ""
+        ).trim();
+
+      const safeLimit =
+        Math.min(
+          Math.max(
+            Number(limit) || 60,
+            1
+          ),
+          200
+        );
+
+      const productFilter = {
+        status: "approved"
+      };
+
+      if (category?.trim()) {
+        productFilter.category =
+          category.trim();
+      }
+
+      if (search?.trim()) {
+        productFilter.$text = {
+          $search:
+            search.trim()
+        };
+      }
+
+      const sellerSelect =
+        "name email sellerProfile.businessName sellerProfile.farmName sellerProfile.village sellerProfile.district sellerProfile.state isActive sellerProfile.approvalStatus";
+
+      /*
+       * Find sellers in the selected village/district.
+       */
+      const sameVillageSellerQuery = {
+        role: "seller",
+        isActive: {
+          $ne: false
+        },
+        "sellerProfile.approvalStatus":
+          "approved"
+      };
+
+      if (selectedVillage) {
+        sameVillageSellerQuery[
+          "sellerProfile.village"
+        ] = new RegExp(
+          `^${escapeRegex(
+            selectedVillage
+          )}$`,
+          "i"
+        );
+      }
+
+      const sameVillageSellers =
+        selectedVillage
+          ? await User.find(
+              sameVillageSellerQuery
+            )
+              .select(
+                "_id name sellerProfile"
+              )
+              .lean()
+          : [];
+
+      const sameVillageSellerIds =
+        sameVillageSellers.map(
+          (seller) =>
+            seller._id
+        );
+
+      const districtSellerQuery = {
+        role: "seller",
+        isActive: {
+          $ne: false
+        },
+        "sellerProfile.approvalStatus":
+          "approved"
+      };
+
+      if (selectedDistrict) {
+        districtSellerQuery[
+          "sellerProfile.district"
+        ] = new RegExp(
+          `^${escapeRegex(
+            selectedDistrict
+          )}$`,
+          "i"
+        );
+      }
+
+      const districtSellers =
+        selectedDistrict
+          ? await User.find(
+              districtSellerQuery
+            )
+              .select(
+                "_id name sellerProfile"
+              )
+              .lean()
+          : [];
+
+      const districtSellerIds =
+        districtSellers.map(
+          (seller) =>
+            seller._id
+        );
+
+      const baseSameFilter = {
+        ...productFilter,
+        ...(sameVillageSellerIds.length
+          ? {
+              seller: {
+                $in:
+                  sameVillageSellerIds
+              }
+            }
+          : {
+              _id: {
+                $exists: false
+              }
+            })
+      };
+
+      const baseDistrictFilter = {
+        ...productFilter,
+        ...(districtSellerIds.length
+          ? {
+              seller: {
+                $in:
+                  districtSellerIds
+              }
+            }
+          : {
+              _id: {
+                $exists: false
+              }
+            })
+      };
+
+      const baseOtherFilter =
+        sameVillageSellerIds.length
+          ? {
+              ...productFilter,
+              seller: {
+                $nin:
+                  sameVillageSellerIds
+              }
+            }
+          : {
+              ...productFilter
+            };
+
+      const [
+        sameVillageCount,
+        sameDistrictCount,
+        totalProducts
+      ] =
+        await Promise.all([
+          Product.countDocuments(
+            baseSameFilter
+          ),
+
+          Product.countDocuments(
+            baseDistrictFilter
+          ),
+
+          Product.countDocuments(
+            productFilter
+          )
+        ]);
+
+      const sortOption = {
+        createdAt: -1
+      };
+
+      let sameVillageProducts = [];
+      let sameDistrictProducts = [];
+      let otherVillageProducts = [];
+
+      if (
+        mode === "same"
+      ) {
+        sameVillageProducts =
+          await Product.find(
+            baseSameFilter
+          )
+            .populate(
+              "seller",
+              sellerSelect
+            )
+            .sort(sortOption)
+            .limit(safeLimit)
+            .lean();
+      } else if (
+        mode === "district"
+      ) {
+        sameDistrictProducts =
+          await Product.find(
+            baseDistrictFilter
+          )
+            .populate(
+              "seller",
+              sellerSelect
+            )
+            .sort(sortOption)
+            .limit(safeLimit)
+            .lean();
+      } else if (
+        mode === "other"
+      ) {
+        otherVillageProducts =
+          await Product.find(
+            baseOtherFilter
+          )
+            .populate(
+              "seller",
+              sellerSelect
+            )
+            .sort(sortOption)
+            .limit(safeLimit)
+            .lean();
+      } else if (
+        mode === "all"
+      ) {
+        otherVillageProducts =
+          await Product.find(
+            productFilter
+          )
+            .populate(
+              "seller",
+              sellerSelect
+            )
+            .sort(sortOption)
+            .limit(safeLimit)
+            .lean();
+      } else {
+        /*
+         * Prioritized marketplace:
+         * same village -> same district -> other village.
+         */
+        sameVillageProducts =
+          await Product.find(
+            baseSameFilter
+          )
+            .populate(
+              "seller",
+              sellerSelect
+            )
+            .sort(sortOption)
+            .limit(safeLimit)
+            .lean();
+
+        const remainingAfterVillage =
+          Math.max(
+            safeLimit -
+              sameVillageProducts.length,
+            0
+          );
+
+        if (
+          remainingAfterVillage >
+          0
+        ) {
+          const districtOnlyFilter =
+            selectedDistrict
+              ? {
+                  ...baseDistrictFilter,
+                  seller:
+                    districtSellerIds.filter(
+                      (sellerId) =>
+                        !sameVillageSellerIds.some(
+                          (sameId) =>
+                            String(
+                              sameId
+                            ) ===
+                            String(
+                              sellerId
+                            )
+                        )
+                    )
+                }
+              : {
+                  _id: {
+                    $exists: false
+                  }
+                };
+
+          sameDistrictProducts =
+            await Product.find(
+              districtOnlyFilter
+            )
+              .populate(
+                "seller",
+                sellerSelect
+              )
+              .sort(sortOption)
+              .limit(
+                remainingAfterVillage
+              )
+              .lean();
+        }
+
+        const remainingAfterDistrict =
+          Math.max(
+            safeLimit -
+              sameVillageProducts.length -
+              sameDistrictProducts.length,
+            0
+          );
+
+        if (
+          remainingAfterDistrict >
+          0
+        ) {
+          otherVillageProducts =
+            await Product.find(
+              baseOtherFilter
+            )
+              .populate(
+                "seller",
+                sellerSelect
+              )
+              .sort(sortOption)
+              .limit(
+                remainingAfterDistrict
+              )
+              .lean();
+        }
+      }
+
+      const classify = (
+        product
+      ) => {
+        const sellerLocation =
+          getSellerLocation(
+            product.seller
+          );
+
+        const same =
+          normalizeLocationValue(
+            selectedVillage
+          ) ===
+            normalizeLocationValue(
+              sellerLocation.village
+            ) &&
+          Boolean(
+            normalizeLocationValue(
+              selectedVillage
+            )
+          );
+
+        const districtMatch =
+          normalizeLocationValue(
+            selectedDistrict
+          ) ===
+            normalizeLocationValue(
+              sellerLocation.district
+            ) &&
+          Boolean(
+            normalizeLocationValue(
+              selectedDistrict
+            )
+          );
+
+        return {
+          ...product,
+
+          marketplaceLocation: {
+            sellerVillage:
+              sellerLocation.village,
+            sellerDistrict:
+              sellerLocation.district,
+            sellerState:
+              sellerLocation.state,
+            sameVillage:
+              same,
+            sameDistrict:
+              districtMatch,
+            group:
+              same
+                ? "same_village"
+                : districtMatch
+                  ? "same_district"
+                  : "other_village"
+          }
+        };
+      };
+
+      const responseSameVillage =
+        sameVillageProducts.map(
+          classify
+        );
+
+      const responseSameDistrict =
+        sameDistrictProducts.map(
+          classify
+        );
+
+      const responseOtherVillages =
+        otherVillageProducts.map(
+          classify
+        );
+
+      /*
+       * Village explorer data for the customer.
+       */
+      const villageGroups =
+        await User.aggregate([
+          {
+            $match: {
+              role: "seller",
+              isActive: {
+                $ne: false
+              },
+              "sellerProfile.approvalStatus":
+                "approved",
+              "sellerProfile.village": {
+                $exists: true,
+                $nin: [
+                  null,
+                  ""
+                ]
+              }
+            }
+          },
+          {
+            $group: {
+              _id: {
+                village:
+                  "$sellerProfile.village",
+                district:
+                  "$sellerProfile.district",
+                state:
+                  "$sellerProfile.state"
+              },
+              sellers: {
+                $sum: 1
+              },
+              sellerIds: {
+                $push: "$_id"
+              }
+            }
+          },
+          {
+            $sort: {
+              sellers: -1,
+              "_id.village": 1
+            }
+          },
+          {
+            $limit: 100
+          }
+        ]);
+
+      const villageExplorer =
+        [];
+
+      for (
+        const group of villageGroups
+      ) {
+        const productCount =
+          await Product.countDocuments({
+            status: "approved",
+            seller: {
+              $in:
+                group.sellerIds
+            }
+          });
+
+        villageExplorer.push({
+          village:
+            group._id.village,
+          district:
+            group._id.district ||
+            "",
+          state:
+            group._id.state ||
+            "",
+          sellers:
+            group.sellers,
+          products:
+            productCount,
+          sameVillage:
+            normalizeLocationValue(
+              group._id.village
+            ) ===
+            normalizeLocationValue(
+              selectedVillage
+            )
+        });
+      }
+
+      return res.status(200).json({
+        success: true,
+
+        data: {
+          location: {
+            customerVillage:
+              customerLocation.village ||
+              null,
+            customerDistrict:
+              customerLocation.district ||
+              null,
+            customerState:
+              customerLocation.state ||
+              null,
+            selectedVillage:
+              selectedVillage ||
+              null,
+            selectedDistrict:
+              selectedDistrict ||
+              null
+          },
+
+          groups: {
+            sameVillage:
+              responseSameVillage,
+            sameDistrict:
+              responseSameDistrict,
+            otherVillages:
+              responseOtherVillages
+          },
+
+          counts: {
+            sameVillage:
+              sameVillageCount,
+            sameDistrict:
+              sameDistrictCount,
+            allProducts:
+              totalProducts
+          },
+
+          categories: [
+            "Vegetables",
+            "Food",
+            "Readymade"
+          ],
+
+          villageExplorer
+        }
+      });
+    }
+  );
+
 module.exports = {
-  getLiveMarketplaceStats
+  getLiveMarketplaceStats,
+  getAdvancedVillageMarketplace
 };
