@@ -1,40 +1,33 @@
+
 require("dotenv").config();
 
 const http = require("http");
 const jwt = require("jsonwebtoken");
-
-const {
-  Server,
-} = require("socket.io");
+const { Server } = require("socket.io");
 
 const app = require("./app");
+const connectDB = require("./config/db");
+const User = require("./models/User");
+const startPaymentExpiryJob = require("./jobs/startPaymentExpiryJob");
 
-const connectDB =
-  require("./config/db");
-
-const User =
-  require("./models/User");
-
-const startPaymentExpiryJob =
-  require("./jobs/startPaymentExpiryJob");
-
-const PORT =
-  process.env.PORT || 5000;
+const PORT = process.env.PORT || 5000;
 
 /*
 |--------------------------------------------------------------------------
 | START SERVER
 |--------------------------------------------------------------------------
 */
-
 const startServer = async () => {
+  let httpServer;
+  let io;
+  let stopPaymentExpiryJob;
+
   try {
     /*
     |--------------------------------------------------------------------------
-    | CONNECT DATABASE
+    | CONNECT TO MONGODB
     |--------------------------------------------------------------------------
     */
-
     await connectDB();
 
     /*
@@ -42,618 +35,347 @@ const startServer = async () => {
     | CREATE HTTP SERVER
     |--------------------------------------------------------------------------
     */
-
-    const httpServer =
-      http.createServer(app);
+    httpServer = http.createServer(app);
 
     /*
     |--------------------------------------------------------------------------
-    | CREATE SOCKET.IO SERVER
+    | SOCKET.IO CORS CONFIGURATION
+    |--------------------------------------------------------------------------
+    | Use the same allowed origins configured in src/app.js.
     |--------------------------------------------------------------------------
     */
+    const defaultAllowedOrigins = [
+      "http://localhost:5173",
+      "http://127.0.0.1:5173",
+      "http://localhost:3000",
+      "https://rural-vegetable-shop-k20uu1mht-ravi-6a21.vercel.app",
+    ];
 
-    const clientUrl =
-      process.env.CLIENT_URL ||
-      "http://localhost:5173";
+    const configuredOrigins = (process.env.CLIENT_URL || "")
+      .split(",")
+      .map((origin) => origin.trim().replace(/\/+$/, ""))
+      .filter(Boolean);
 
-    const io =
-      new Server(
-        httpServer,
-        {
-          cors: {
-            origin: clientUrl,
-            credentials: true,
-          },
+    const allowedOrigins =
+      app.get("allowedOrigins") ||
+      [
+        ...new Set([
+          ...defaultAllowedOrigins,
+          ...configuredOrigins,
+        ]),
+      ];
 
-          /*
-           * Allow websocket first and
-           * polling as fallback.
-           */
-          transports: [
-            "websocket",
-            "polling",
-          ],
-        }
-      );
+    io = new Server(httpServer, {
+      cors: {
+        origin: (origin, callback) => {
+          // Allow non-browser/server-to-server requests without Origin.
+          if (!origin) {
+            return callback(null, true);
+          }
+
+          const normalizedOrigin = origin
+            .trim()
+            .replace(/\/+$/, "");
+
+          if (allowedOrigins.includes(normalizedOrigin)) {
+            return callback(null, true);
+          }
+
+          console.warn(
+            `[Socket.IO CORS] Blocked origin: ${normalizedOrigin}`
+          );
+
+          return callback(
+            new Error(
+              `Socket.IO CORS blocked origin: ${normalizedOrigin}`
+            )
+          );
+        },
+
+        credentials: true,
+        methods: ["GET", "POST"],
+      },
+
+      // WebSocket is preferred; polling remains available as fallback.
+      transports: ["websocket", "polling"],
+    });
 
     /*
     |--------------------------------------------------------------------------
-    | MAKE SOCKET.IO AVAILABLE TO EXPRESS
+    | MAKE SOCKET.IO AVAILABLE TO CONTROLLERS
     |--------------------------------------------------------------------------
-    |
-    | Controllers can access it using:
-    |
-    | const io = req.app.get("io");
-    |
+    | Controllers can use: req.app.get("io")
+    |--------------------------------------------------------------------------
     */
-
     app.set("io", io);
 
-    console.log(
-      "Socket.IO configured with CLIENT_URL:",
-      clientUrl
-    );
+    console.log("[Socket.IO] Allowed frontend origins:", allowedOrigins);
 
     /*
     |--------------------------------------------------------------------------
-    | SOCKET AUTHENTICATION
+    | SOCKET.IO JWT AUTHENTICATION
     |--------------------------------------------------------------------------
-    |
-    | Frontend sends:
-    |
-    | io(SOCKET_URL, {
-    |   auth: {
-    |     token
-    |   }
-    | });
-    |
+    | The frontend should pass its token using:
+    | io(SOCKET_URL, { auth: { token } })
     |--------------------------------------------------------------------------
     */
+    io.use(async (socket, next) => {
+      try {
+        const token = socket.handshake.auth?.token;
 
-    io.use(
-      async (socket, next) => {
-        try {
-          /*
-           * Get token from Socket.IO
-           * handshake.
-           */
-          const token =
-            socket.handshake.auth
-              ?.token;
+        if (!token) {
+          return next(new Error("Authentication required"));
+        }
 
-          if (!token) {
-            console.error(
-              "SOCKET AUTH ERROR: Token missing"
-            );
+        const jwtSecret =
+          process.env.JWT_SECRET ||
+          process.env.JWT_SECRET_KEY ||
+          process.env.JWT_PRIVATE_KEY;
 
-            return next(
-              new Error(
-                "Authentication required"
-              )
-            );
-          }
-
-          /*
-           * JWT secret.
-           *
-           * Supports the project's common
-           * environment variable names.
-           */
-          const jwtSecret =
-            process.env.JWT_SECRET ||
-            process.env.JWT_SECRET_KEY ||
-            process.env.JWT_PRIVATE_KEY;
-
-          if (!jwtSecret) {
-            console.error(
-              "SOCKET AUTH ERROR: JWT secret is not configured"
-            );
-
-            return next(
-              new Error(
-                "JWT secret is not configured"
-              )
-            );
-          }
-
-          /*
-           * Verify JWT.
-           */
-          const decoded =
-            jwt.verify(
-              token,
-              jwtSecret
-            );
-
-          /*
-           * Support multiple possible
-           * JWT user ID field names.
-           */
-          const userId =
-            decoded?.id ||
-            decoded?._id ||
-            decoded?.userId ||
-            decoded?.sub;
-
-          if (!userId) {
-            console.error(
-              "SOCKET AUTH ERROR: User ID missing from JWT"
-            );
-
-            return next(
-              new Error(
-                "Invalid authentication token: user ID missing"
-              )
-            );
-          }
-
-          /*
-           * IMPORTANT:
-           *
-           * Do not trust the role only from
-           * the JWT.
-           *
-           * Read the current user from MongoDB.
-           */
-          const user =
-            await User.findById(
-              userId
-            )
-              .select(
-                "_id role isActive"
-              )
-              .lean();
-
-          if (!user) {
-            console.error(
-              "SOCKET AUTH ERROR: User not found:",
-              String(userId)
-            );
-
-            return next(
-              new Error(
-                "User account not found"
-              )
-            );
-          }
-
-          /*
-           * Check whether account is active.
-           */
-          if (
-            user.isActive === false
-          ) {
-            console.error(
-              "SOCKET AUTH ERROR: User inactive:",
-              String(user._id)
-            );
-
-            return next(
-              new Error(
-                "User account is inactive"
-              )
-            );
-          }
-
-          /*
-           * Normalize role.
-           */
-          const role =
-            String(
-              user.role || ""
-            ).toLowerCase();
-
-          /*
-           * Store verified user information
-           * on socket.
-           */
-          socket.user = {
-            id: String(
-              user._id
-            ),
-
-            role,
-          };
-
-          console.log(
-            "SOCKET AUTH SUCCESS:",
-            {
-              userId: String(
-                user._id
-              ),
-
-              role,
-            }
-          );
-
-          next();
-        } catch (error) {
+        if (!jwtSecret) {
           console.error(
-            "Socket authentication error:",
-            error.message
+            "SOCKET AUTH ERROR: JWT secret is not configured"
           );
 
+          return next(new Error("JWT secret is not configured"));
+        }
+
+        const decoded = jwt.verify(token, jwtSecret);
+
+        const userId =
+          decoded?.id ||
+          decoded?._id ||
+          decoded?.userId ||
+          decoded?.sub;
+
+        if (!userId) {
           return next(
-            new Error(
-              "Invalid or expired token"
-            )
+            new Error("Invalid authentication token: user ID missing")
           );
         }
+
+        // Read the current user and role from MongoDB instead of trusting
+        // a role supplied by the client.
+        const user = await User.findById(userId)
+          .select("_id role isActive")
+          .lean();
+
+        if (!user) {
+          return next(new Error("User account not found"));
+        }
+
+        if (user.isActive === false) {
+          return next(new Error("User account is inactive"));
+        }
+
+        socket.user = {
+          id: String(user._id),
+          role: String(user.role || "").toLowerCase(),
+        };
+
+        next();
+      } catch (error) {
+        console.error(
+          "Socket authentication error:",
+          error.message
+        );
+
+        return next(new Error("Invalid or expired token"));
       }
-    );
+    });
 
     /*
     |--------------------------------------------------------------------------
-    | SOCKET CONNECTION
+    | SOCKET CONNECTIONS AND ROOMS
     |--------------------------------------------------------------------------
     */
+    io.on("connection", (socket) => {
+      const userId = String(socket.user.id);
+      const role = String(socket.user.role || "").toLowerCase();
 
-    io.on(
-      "connection",
-      (socket) => {
-        /*
-         * User information was already
-         * authenticated in io.use().
-         */
-        const userId =
-          String(
-            socket.user.id
-          );
+      console.log("SOCKET CONNECTED", {
+        socketId: socket.id,
+        userId,
+        role,
+      });
 
-        const role =
-          String(
-            socket.user.role ||
-              ""
-          ).toLowerCase();
+      /*
+      |--------------------------------------------------------------------------
+      | PERSONAL USER ROOM
+      |--------------------------------------------------------------------------
+      | Room format: user:<userId>
+      |--------------------------------------------------------------------------
+      */
+      const userRoom = `user:${userId}`;
+      socket.join(userRoom);
 
-        console.log(
-          "================================================"
-        );
+      /*
+      |--------------------------------------------------------------------------
+      | SELLER ROOM
+      |--------------------------------------------------------------------------
+      | Room format: seller:<sellerId>
+      |--------------------------------------------------------------------------
+      */
+      let sellerRoom = null;
 
-        console.log(
-          "SOCKET CONNECTED"
-        );
-
-        console.log({
-          socketId:
-            socket.id,
-
-          userId,
-
-          role,
-        });
-
-        console.log(
-          "================================================"
-        );
-
-        /*
-        |--------------------------------------------------------------------------
-        | PERSONAL USER ROOM
-        |--------------------------------------------------------------------------
-        |
-        | Every authenticated user gets:
-        |
-        | user:<userId>
-        |
-        */
-
-        const userRoom =
-          `user:${userId}`;
-
-        socket.join(
-          userRoom
-        );
-
-        console.log(
-          `USER ROOM JOINED: ${userRoom}`
-        );
-
-        /*
-        |--------------------------------------------------------------------------
-        | SELLER ROOM
-        |--------------------------------------------------------------------------
-        |
-        | Seller ID:
-        |
-        | 123
-        |
-        | joins:
-        |
-        | seller:123
-        |
-        | This MUST match:
-        |
-        | io.to(`seller:${sellerId}`)
-        |
-        */
-
-        let sellerRoom =
-          null;
-
-        if (
-          role === "seller"
-        ) {
-          sellerRoom =
-            `seller:${userId}`;
-
-          socket.join(
-            sellerRoom
-          );
-
-          console.log(
-            `SELLER ROOM JOINED: ${sellerRoom}`
-          );
-        }
-
-        /*
-        |--------------------------------------------------------------------------
-        | ADMIN ROOM
-        |--------------------------------------------------------------------------
-        |
-        | Admin joins:
-        |
-        | admin
-        |
-        | This MUST match:
-        |
-        | io.to("admin")
-        |
-        */
-
-        let adminRoom =
-          null;
-
-        if (
-          role === "admin"
-        ) {
-          adminRoom =
-            "admin";
-
-          socket.join(
-            adminRoom
-          );
-
-          console.log(
-            "ADMIN ROOM JOINED: admin"
-          );
-        }
-
-        /*
-        |--------------------------------------------------------------------------
-        | SOCKET READY
-        |--------------------------------------------------------------------------
-        |
-        | Frontend can listen for:
-        |
-        | socket.on("socket:ready", ...)
-        |
-        */
-
-        socket.emit(
-          "socket:ready",
-          {
-            socketId:
-              socket.id,
-
-            userId,
-
-            role,
-
-            userRoom,
-
-            sellerRoom,
-
-            adminRoom,
-          }
-        );
-
-        console.log(
-          "SOCKET READY SENT:",
-          {
-            socketId:
-              socket.id,
-
-            userId,
-
-            role,
-
-            userRoom,
-
-            sellerRoom,
-
-            adminRoom,
-          }
-        );
-
-        /*
-        |--------------------------------------------------------------------------
-        | SOCKET PING
-        |--------------------------------------------------------------------------
-        |
-        | Optional debugging event.
-        */
-
-        socket.on(
-          "socket:ping",
-          () => {
-            socket.emit(
-              "socket:pong",
-              {
-                socketId:
-                  socket.id,
-
-                userId,
-
-                role,
-
-                timestamp:
-                  new Date().toISOString(),
-              }
-            );
-          }
-        );
-
-        /*
-        |--------------------------------------------------------------------------
-        | DISCONNECT
-        |--------------------------------------------------------------------------
-        */
-
-        socket.on(
-          "disconnect",
-          (reason) => {
-            console.log(
-              "================================================"
-            );
-
-            console.log(
-              "SOCKET DISCONNECTED"
-            );
-
-            console.log({
-              socketId:
-                socket.id,
-
-              userId,
-
-              role,
-
-              reason,
-            });
-
-            console.log(
-              "================================================"
-            );
-          }
-        );
+      if (role === "seller") {
+        sellerRoom = `seller:${userId}`;
+        socket.join(sellerRoom);
+        console.log(`SELLER ROOM JOINED: ${sellerRoom}`);
       }
-    );
+
+      /*
+      |--------------------------------------------------------------------------
+      | ADMIN ROOM
+      |--------------------------------------------------------------------------
+      | Room name: admin
+      |--------------------------------------------------------------------------
+      */
+      let adminRoom = null;
+
+      if (role === "admin") {
+        adminRoom = "admin";
+        socket.join(adminRoom);
+        console.log("ADMIN ROOM JOINED: admin");
+      }
+
+      /*
+      |--------------------------------------------------------------------------
+      | SOCKET READY EVENT
+      |--------------------------------------------------------------------------
+      */
+      socket.emit("socket:ready", {
+        socketId: socket.id,
+        userId,
+        role,
+        userRoom,
+        sellerRoom,
+        adminRoom,
+      });
+
+      /*
+      |--------------------------------------------------------------------------
+      | OPTIONAL PING / PONG EVENTS
+      |--------------------------------------------------------------------------
+      */
+      socket.on("socket:ping", () => {
+        socket.emit("socket:pong", {
+          socketId: socket.id,
+          userId,
+          role,
+          timestamp: new Date().toISOString(),
+        });
+      });
+
+      /*
+      |--------------------------------------------------------------------------
+      | DISCONNECT EVENT
+      |--------------------------------------------------------------------------
+      */
+      socket.on("disconnect", (reason) => {
+        console.log("SOCKET DISCONNECTED", {
+          socketId: socket.id,
+          userId,
+          role,
+          reason,
+        });
+      });
+    });
 
     /*
     |--------------------------------------------------------------------------
     | PAYMENT EXPIRY JOB
     |--------------------------------------------------------------------------
     */
-
-    const stopPaymentExpiryJob =
-      startPaymentExpiryJob();
+    stopPaymentExpiryJob = startPaymentExpiryJob();
 
     /*
     |--------------------------------------------------------------------------
     | START HTTP SERVER
     |--------------------------------------------------------------------------
     */
-
-    httpServer.listen(
-      PORT,
-      () => {
-        console.log(
-          "================================================"
-        );
-
-        console.log(
-          `Server running on http://localhost:${PORT}`
-        );
-
-        console.log(
-          "Socket.IO server is ready."
-        );
-
-        console.log(
-          "Payment expiry job started."
-        );
-
-        console.log(
-          "================================================"
-        );
-      }
-    );
+    httpServer.listen(PORT, "0.0.0.0", () => {
+      console.log("==============================================");
+      console.log(`Server listening on port ${PORT}`);
+      console.log("Socket.IO server is ready.");
+      console.log("Payment expiry job started.");
+      console.log("==============================================");
+    });
 
     /*
     |--------------------------------------------------------------------------
     | GRACEFUL SHUTDOWN
     |--------------------------------------------------------------------------
     */
+    let isShuttingDown = false;
 
-    const shutdown =
-      async (signal) => {
-        console.log(
-          `${signal} received. Shutting down...`
-        );
+    const shutdown = async (signal) => {
+      if (isShuttingDown) return;
+      isShuttingDown = true;
 
-        /*
-         * Stop payment expiry job.
-         */
-        if (
-          typeof stopPaymentExpiryJob ===
-          "function"
-        ) {
+      console.log(`${signal} received. Shutting down...`);
+
+      if (typeof stopPaymentExpiryJob === "function") {
+        try {
           stopPaymentExpiryJob();
-
-          console.log(
-            "Payment expiry job stopped."
+          console.log("Payment expiry job stopped.");
+        } catch (error) {
+          console.error(
+            "Error stopping payment expiry job:",
+            error.message
           );
         }
+      }
 
-        /*
-         * Close Socket.IO.
-         */
-        io.close(
-          () => {
-            console.log(
-              "Socket.IO server closed."
-            );
+      if (io) {
+        io.close();
+        console.log("Socket.IO server closed.");
+      }
+
+      if (httpServer && httpServer.listening) {
+        httpServer.close((error) => {
+          if (error) {
+            console.error("Error closing HTTP server:", error);
+            process.exitCode = 1;
+          } else {
+            console.log("HTTP server closed.");
           }
-        );
 
-        /*
-         * Close HTTP server.
-         */
-        httpServer.close(
-          () => {
-            console.log(
-              "HTTP server closed."
-            );
+          process.exit();
+        });
+      } else {
+        process.exit();
+      }
+    };
 
-            process.exit(0);
-          }
-        );
-      };
-
-    /*
-    |--------------------------------------------------------------------------
-    | PROCESS SIGNALS
-    |--------------------------------------------------------------------------
-    */
-
-    process.on(
-      "SIGTERM",
-      () =>
-        shutdown("SIGTERM")
-    );
-
-    process.on(
-      "SIGINT",
-      () =>
-        shutdown("SIGINT")
-    );
+    process.once("SIGTERM", () => shutdown("SIGTERM"));
+    process.once("SIGINT", () => shutdown("SIGINT"));
   } catch (error) {
-    console.error(
-      "================================================"
-    );
-
-    console.error(
-      `Server startup failed: ${error.message}`
-    );
-
+    console.error("==============================================");
+    console.error(`Server startup failed: ${error.message}`);
     console.error(error);
+    console.error("==============================================");
 
-    console.error(
-      "================================================"
-    );
+    if (typeof stopPaymentExpiryJob === "function") {
+      try {
+        stopPaymentExpiryJob();
+      } catch (jobError) {
+        console.error(
+          "Error stopping payment expiry job:",
+          jobError.message
+        );
+      }
+    }
 
-    process.exit(1);
+    if (io) {
+      io.close();
+    }
+
+    if (httpServer && httpServer.listening) {
+      httpServer.close(() => process.exit(1));
+    } else {
+      process.exit(1);
+    }
   }
 };
 
@@ -662,5 +384,4 @@ const startServer = async () => {
 | START APPLICATION
 |--------------------------------------------------------------------------
 */
-
 startServer();
