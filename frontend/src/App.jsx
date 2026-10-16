@@ -1,3 +1,4 @@
+
 import {
   useCallback,
   useEffect,
@@ -3703,6 +3704,14 @@ function CustomerRegister() {
     password:
       "",
     confirmPassword:
+      "",
+    village:
+      "",
+    taluk:
+      "",
+    district:
+      "",
+    state:
       ""
   });
 
@@ -3811,7 +3820,15 @@ function CustomerRegister() {
                     phone:
                       formData.phone.trim(),
                     password:
-                      formData.password
+                      formData.password,
+                    village:
+                      formData.village.trim(),
+                    taluk:
+                      formData.taluk.trim(),
+                    district:
+                      formData.district.trim(),
+                    state:
+                      formData.state.trim()
                   }
                 )
             }
@@ -3940,6 +3957,57 @@ function CustomerRegister() {
           }
         />
 
+        <div className="border-t border-slate-100 pt-5">
+
+          <div className="mb-4">
+            <p className="text-[9px] font-black uppercase tracking-[0.18em] text-emerald-600">
+              Address details
+            </p>
+            <h2 className="mt-1 text-lg font-black text-slate-950">
+              Your location
+            </h2>
+          </div>
+
+          <div className="grid gap-5 sm:grid-cols-2">
+            <Input
+              label="Village name"
+              name="village"
+              value={formData.village}
+              onChange={handleChange}
+              placeholder="Enter your village name"
+              autoComplete="address-level4"
+              disabled={loading}
+            />
+            <Input
+              label="Taluk"
+              name="taluk"
+              value={formData.taluk}
+              onChange={handleChange}
+              placeholder="Enter your taluk"
+              disabled={loading}
+            />
+            <Input
+              label="District"
+              name="district"
+              value={formData.district}
+              onChange={handleChange}
+              placeholder="Enter your district"
+              autoComplete="address-level2"
+              disabled={loading}
+            />
+            <Input
+              label="State"
+              name="state"
+              value={formData.state}
+              onChange={handleChange}
+              placeholder="Karnataka"
+              autoComplete="address-level1"
+              disabled={loading}
+            />
+          </div>
+
+        </div>
+
         <button
           type="submit"
           disabled={
@@ -3998,6 +4066,8 @@ function SellerRegister() {
     farmDescription:
       "",
     village:
+      "",
+    taluk:
       "",
     district:
       "",
@@ -4124,6 +4194,8 @@ function SellerRegister() {
                       formData.farmDescription.trim(),
                     village:
                       formData.village.trim(),
+                    taluk:
+                      formData.taluk.trim(),
                     district:
                       formData.district.trim(),
                     state:
